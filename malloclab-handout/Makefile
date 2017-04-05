@@ -4,8 +4,8 @@
 TEAM = Struschka
 VERSION = 1
 
-CC = gcc -pg -g
-CFLAGS = -Wall -O2 -m32
+CC = gcc
+CFLAGS = -Wall -O2 -m32 -pg -g
 
 OBJS = mdriver.o mm.o memlib.o fsecs.o fcyc.o clock.o ftimer.o
 
