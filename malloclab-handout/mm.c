@@ -69,10 +69,20 @@ team_t team = {
 /* Given block ptr bp, compute address of next and previous blocks */
 #define NEXT_BLKP(bp)  ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp)  ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
+
+/* Given block ptr bp, compute address of next and previous free blocks */
+#define NEXT_FREE_BLKP(bp)  (char *)(GET((bp)))
+#define PREV_FREE_BLKP(bp)  (char *)(GET((bp) + WSIZE))
+
+/* set explicit freelist pointers of bp */
+#define SET_NEXTP(bp, p) PUT((bp), (size_t)(p))
+#define SET_PREVP(bp, p) PUT((bp)+WSIZE, (size_t)(p))
+
 /* $end mallocmacros */
 
 /* Global variables */
 static char *heap_listp;  /* pointer to first block */
+static char *heap_listr;  /* pointer to root of list */
 #ifdef NEXT_FIT
 static char *rover;       /* next fit rover */
 #endif
@@ -97,8 +107,10 @@ int mm_init(void)
   PUT(heap_listp, 0);                        /* alignment padding */
   PUT(heap_listp+WSIZE, PACK(OVERHEAD, 1));  /* prologue header */
   PUT(heap_listp+DSIZE, PACK(OVERHEAD, 1));  /* prologue footer */
-  PUT(heap_listp+WSIZE+DSIZE, PACK(0, 1));   /* epilogue header */
+  PUT(heap_listp+DSIZE+WSIZE, PACK(0, 1));   /* epilogue header */
+  
   heap_listp += DSIZE;
+  heap_listr = 0;
 
 #ifdef NEXT_FIT
   rover = heap_listp;
@@ -229,7 +241,7 @@ static void *extend_heap(size_t words)
   PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* new epilogue header */
 
   /* Coalesce if the previous block was free */
-  return coalesce(bp);
+  return coalesce(bp); /* coalesce will set next and prev pointers */
 }
 /* $end mmextendheap */
 
@@ -247,13 +259,30 @@ static void place(void *bp, size_t asize)
   if ((csize - asize) >= (DSIZE + OVERHEAD)) {
     PUT(HDRP(bp), PACK(asize, 1));
     PUT(FTRP(bp), PACK(asize, 1));
+
+    /* remove */
+    if (PREV_FREE_BLKP(bp))
+      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
+    else
+      heap_listr = NEXT_FREE_BLKP(bp);
+    if (NEXT_FREE_BLKP(bp))
+      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
+
     bp = NEXT_BLKP(bp);
     PUT(HDRP(bp), PACK(csize-asize, 0));
     PUT(FTRP(bp), PACK(csize-asize, 0));
+    coalesce(bp);
   }
   else {
     PUT(HDRP(bp), PACK(csize, 1));
     PUT(FTRP(bp), PACK(csize, 1));
+    /* remove */
+    if (PREV_FREE_BLKP(bp))
+      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
+    else
+      heap_listr = NEXT_FREE_BLKP(bp);
+    if (NEXT_FREE_BLKP(bp))
+      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
   }
 }
 /* $end mmplace */
@@ -282,8 +311,10 @@ static void *find_fit(size_t asize)
   /* first fit search */
   void *bp;
 
-  for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
-    if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+  for (bp = heap_listr;  bp != 0 && GET_ALLOC(HDRP(bp)) == 0; bp = NEXT_FREE_BLKP(bp)) {
+    if (bp == 0)
+      break;
+    if (asize <= GET_SIZE(HDRP(bp))) {
       return bp;
     }
   }
@@ -301,28 +332,98 @@ static void *coalesce(void *bp)
   size_t size = GET_SIZE(HDRP(bp));
 
   if (prev_alloc && next_alloc) {            /* Case 1 */
+    /* set new head */
+    SET_NEXTP(bp, heap_listr);
+    if (heap_listr != 0)
+      SET_PREVP(heap_listr, bp);
+    SET_PREVP(bp, 0);
+    heap_listr = bp;
     return bp;
   }
 
   else if (prev_alloc && !next_alloc) {      /* Case 2 */
+    bp = NEXT_BLKP(bp);
+    /* remove block from free list */
+    if (PREV_FREE_BLKP(bp))
+      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
+    else
+      heap_listr = NEXT_FREE_BLKP(bp);
+    if (NEXT_FREE_BLKP(bp))
+      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
+    bp = PREV_BLKP(bp);
+
+    /* set up new header & footer for current block */
     size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
     PUT(HDRP(bp), PACK(size, 0));
-    PUT(FTRP(bp), PACK(size,0));
+    PUT(FTRP(bp), PACK(size, 0));
+
+    /* set new head */
+    SET_NEXTP(bp, heap_listr);
+    if (heap_listr != 0)
+      SET_PREVP(heap_listr, bp);
+    SET_PREVP(bp, 0);
+    heap_listr = bp;
+    return bp;
   }
 
   else if (!prev_alloc && next_alloc) {      /* Case 3 */
     size += GET_SIZE(HDRP(PREV_BLKP(bp)));
-    PUT(FTRP(bp), PACK(size, 0));
-    PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
     bp = PREV_BLKP(bp);
+
+    /* remove block from free list */
+    if (PREV_FREE_BLKP(bp))
+      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
+    else
+      heap_listr = NEXT_FREE_BLKP(bp);
+    if (NEXT_FREE_BLKP(bp))
+      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
+
+    /* set up new header & footer for current block */
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+
+    /* set new head */
+    SET_NEXTP(bp, heap_listr);
+    if (heap_listr != 0)
+      SET_PREVP(heap_listr, bp);
+    SET_PREVP(bp, 0);
+    heap_listr = bp;
+    return bp;
   }
 
   else {                                     /* Case 4 */
     size += GET_SIZE(HDRP(PREV_BLKP(bp))) +
       GET_SIZE(FTRP(NEXT_BLKP(bp)));
-    PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
-    PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
-    bp = PREV_BLKP(bp);
+
+    bp = NEXT_BLKP(bp);
+    /* remove block from free list */
+    if (PREV_FREE_BLKP(bp))
+      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
+    else
+      heap_listr = NEXT_FREE_BLKP(bp);
+    if (NEXT_FREE_BLKP(bp))
+      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
+
+    bp = PREV_BLKP(PREV_BLKP(bp));
+    /* remove block from free list */
+    if (PREV_FREE_BLKP(bp))
+      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
+    else
+      heap_listr = NEXT_FREE_BLKP(bp);
+    if (NEXT_FREE_BLKP(bp))
+      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
+
+    /* set up header & footer for current block */
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+
+    /* set new head */
+    SET_NEXTP(bp, heap_listr);
+    if (heap_listr != 0)
+      SET_PREVP(heap_listr, bp);
+    SET_PREVP(bp, 0);
+    heap_listr = bp;
+    return bp;
   }
 
 #ifdef NEXT_FIT
@@ -351,8 +452,8 @@ static void printblock(void *bp)
   }
 
   printf("%p: header: [%d:%c] footer: [%d:%c]\n", bp,
-         hsize, (halloc ? 'a' : 'f'),
-         fsize, (falloc ? 'a' : 'f'));
+         (int) hsize, (halloc ? 'a' : 'f'),
+         (int) fsize, (falloc ? 'a' : 'f'));
 }
 
 static void checkblock(void *bp)
