@@ -112,13 +112,12 @@ int mm_init(void)
   heap_listp += DSIZE;
   heap_listr = 0;
 
-#ifdef NEXT_FIT
-  rover = heap_listp;
-#endif
-
   /* Extend the empty heap with a free block of CHUNKSIZE bytes */
   if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
     return -1;
+#ifdef NEXT_FIT
+  rover = heap_listr;
+#endif
   return 0;
 }
 /* $end mminit */
@@ -256,17 +255,17 @@ static void place(void *bp, size_t asize)
 {
   size_t csize = GET_SIZE(HDRP(bp));
 
+  /* remove block from free list */
+  if (PREV_FREE_BLKP(bp))
+    SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
+  else
+    heap_listr = NEXT_FREE_BLKP(bp);
+  if (NEXT_FREE_BLKP(bp))
+    SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
+
   if ((csize - asize) >= (DSIZE + OVERHEAD)) {
     PUT(HDRP(bp), PACK(asize, 1));
     PUT(FTRP(bp), PACK(asize, 1));
-
-    /* remove */
-    if (PREV_FREE_BLKP(bp))
-      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
-    else
-      heap_listr = NEXT_FREE_BLKP(bp);
-    if (NEXT_FREE_BLKP(bp))
-      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
 
     bp = NEXT_BLKP(bp);
     PUT(HDRP(bp), PACK(csize-asize, 0));
@@ -276,13 +275,6 @@ static void place(void *bp, size_t asize)
   else {
     PUT(HDRP(bp), PACK(csize, 1));
     PUT(FTRP(bp), PACK(csize, 1));
-    /* remove */
-    if (PREV_FREE_BLKP(bp))
-      SET_NEXTP(PREV_FREE_BLKP(bp), NEXT_FREE_BLKP(bp));
-    else
-      heap_listr = NEXT_FREE_BLKP(bp);
-    if (NEXT_FREE_BLKP(bp))
-      SET_PREVP(NEXT_FREE_BLKP(bp), PREV_FREE_BLKP(bp));
   }
 }
 /* $end mmplace */
@@ -297,13 +289,13 @@ static void *find_fit(size_t asize)
   char *oldrover = rover;
 
   /* search from the rover to the end of list */
-  for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
-    if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+  for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_FREE_BLKP(rover))
+    if (asize <= GET_SIZE(HDRP(rover)))
       return rover;
 
   /* search from start of list to old rover */
-  for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover))
-    if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+  for (rover = heap_listp; rover < oldrover; rover = NEXT_FREE_BLKP(rover))
+    if (asize <= GET_SIZE(HDRP(rover)))
       return rover;
 
   return NULL;  /* no fit found */
@@ -311,7 +303,7 @@ static void *find_fit(size_t asize)
   /* first fit search */
   void *bp;
 
-  for (bp = heap_listr;  bp != 0 && GET_ALLOC(HDRP(bp)) == 0; bp = NEXT_FREE_BLKP(bp)) {
+  for (bp = heap_listr;  bp != 0; bp = NEXT_FREE_BLKP(bp)) {
     if (bp == 0)
       break;
     if (asize <= GET_SIZE(HDRP(bp))) {
@@ -338,7 +330,6 @@ static void *coalesce(void *bp)
       SET_PREVP(heap_listr, bp);
     SET_PREVP(bp, 0);
     heap_listr = bp;
-    return bp;
   }
 
   else if (prev_alloc && !next_alloc) {      /* Case 2 */
@@ -363,7 +354,6 @@ static void *coalesce(void *bp)
       SET_PREVP(heap_listr, bp);
     SET_PREVP(bp, 0);
     heap_listr = bp;
-    return bp;
   }
 
   else if (!prev_alloc && next_alloc) {      /* Case 3 */
@@ -388,7 +378,6 @@ static void *coalesce(void *bp)
       SET_PREVP(heap_listr, bp);
     SET_PREVP(bp, 0);
     heap_listr = bp;
-    return bp;
   }
 
   else {                                     /* Case 4 */
@@ -423,13 +412,12 @@ static void *coalesce(void *bp)
       SET_PREVP(heap_listr, bp);
     SET_PREVP(bp, 0);
     heap_listr = bp;
-    return bp;
   }
 
 #ifdef NEXT_FIT
   /* Make sure the rover isn't pointing into the free block */
   /* that we just coalesced */
-  if ((rover > (char *)bp) && (rover < NEXT_BLKP(bp)))
+  if ((rover > (char *)bp) && (rover < NEXT_FREE_BLKP(bp)))
     rover = bp;
 #endif
 
