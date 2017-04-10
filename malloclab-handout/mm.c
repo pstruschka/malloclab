@@ -198,6 +198,7 @@ void *mm_realloc(void *ptr, size_t size)
 void mm_checkheap(int verbose)
 {
   char *bp = heap_listp;
+  printf("CHECK\n");
 
   if (verbose)
     printf("Heap (%p):\n", heap_listp);
@@ -206,10 +207,18 @@ void mm_checkheap(int verbose)
     printf("Bad prologue header\n");
   checkblock(heap_listp);
 
-  for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_BLKP(bp)) {
+  for (bp = heap_listp; GET_SIZE(HDRP(bp)) > 0; bp = NEXT_FREE_BLKP(bp)) {
     if (verbose)
       printblock(bp);
     checkblock(bp);
+  }
+
+  for (bp = heap_listr;  bp != 0; bp = NEXT_FREE_BLKP(bp)) {
+    /* check coalescing */
+    if (GET_ALLOC(NEXT_BLKP(bp)) || GET_ALLOC(PREV_BLKP(bp)))
+    {
+      printf("Bad coalesceing\n");
+    }
   }
 
   if (verbose)
@@ -304,8 +313,6 @@ static void *find_fit(size_t asize)
   void *bp;
 
   for (bp = heap_listr;  bp != 0; bp = NEXT_FREE_BLKP(bp)) {
-    if (bp == 0)
-      break;
     if (asize <= GET_SIZE(HDRP(bp))) {
       return bp;
     }
